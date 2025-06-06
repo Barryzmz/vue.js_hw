@@ -18,4 +18,5 @@ export default {
 
 <template>
   <h2 class=" m-2" v-if="objects.length == 0">目前無任何資料</h2>
+  <h2 class=" m-2" v-if="objects.length == 0">test</h2>
 </template>
