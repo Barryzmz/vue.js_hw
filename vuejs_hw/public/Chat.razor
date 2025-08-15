@@ -1,55 +1,145 @@
 ﻿@page "/chat"
 @inject NavigationManager NavigationManager
-@rendermode InteractiveWebAssembly
+@inject IJSRuntime JSRuntime
+@rendermode @(new Microsoft.AspNetCore.Components.Web.InteractiveWebAssemblyRenderMode())
+@using Microsoft.AspNetCore.SignalR.Client
+
 
 <h3>Chat</h3>
 
-@if (isConnected)
+@if (!isUserNameSet)
 {
-    <input type="text" @bind="userInput" />
-    <input type="text" @bind="messageInput" />
-    <button @onclick="Send">Send</button>
-
-    <ul id="messagesList">
-        @foreach (var message in messages)
-        {
-            <li>@message</li>
-        }
-    </ul>
+    <div>
+        <h4>請輸入您的使用者名稱</h4>
+        <input type="text" @bind="userInput" @bind:event="oninput" placeholder="使用者名稱" />
+        <button @onclick="SetUserName" class="btn btn-primary" disabled="@(string.IsNullOrWhiteSpace(userInput))">進入聊天室</button>
+    </div>
+}
+else if (isConnected)
+{
+    <div>
+        <h4>歡迎, @userName!</h4>
+        <button @onclick="LeaveChat" class="btn btn-primary" style="margin-top: 10px;">離開聊天室</button>
+        <div>
+            <div id="messagesList" style="height: 400px; overflow-y: auto; border: 1px solid #ddd; border-radius: 8px; padding: 10px; margin-top: 20px; background-color: #f9f9f9;">
+                @foreach (var message in messages)
+                {
+                    <div style="margin-bottom: 10px; padding: 10px; border-radius: 8px; max-width: 50%; width: fit-content; word-wrap: break-word; overflow-wrap: break-word; @(message.IsOwnMessage ? "background-color: #dcf8c6; margin-left: auto;" : "background-color: #ffffff; border: 1px solid #eee; margin-right: auto;")">
+                        <div style="font-weight: bold; font-size: 14px; color: #666; margin-bottom: 5px; word-wrap: break-word;">
+                            @message.UserName 
+                            @message.Timestamp.ToString("HH:mm")
+                        </div>
+                        <div style="font-size: 14px; color: #333; white-space: pre-wrap; word-wrap: break-word; overflow-wrap: break-word;">
+                            @message.Content
+                        </div>
+                    </div>
+                }
+            </div>
+        </div>
+        <div style="display: flex; align-items: start; gap: 10px; margin-top: 10px;">
+            <textarea @bind="messageInput" @bind:event="oninput" placeholder="輸入訊息" 
+                      style="height: 100px; resize: none; flex: 1; padding: 8px; border: 1px solid #ccc; border-radius: 4px; font-family: inherit; font-size: 14px; line-height: 1.2;"></textarea>
+            <button @onclick="Send" class="btn btn-primary" disabled="@(string.IsNullOrWhiteSpace(messageInput))" style="height: 3em; white-space: nowrap;">發送</button>
+        </div>
+    </div>
 }
 else
 {
-    <span>Connecting...</span>
+    <span>正在連接聊天室...</span>
 }
 
 
 @code {
-    private HubConnection hubConnection;
-    private List<string> messages = new List<string>();
+    private HubConnection? hubConnection;
+    private List<ChatMessage> messages = new List<ChatMessage>();
     private string userInput = "";
     private string messageInput = "";
+    private string userName = "";
+    private bool isUserNameSet = false;
 
-    protected override async Task OnInitializedAsync()
+    public class ChatMessage
     {
-        hubConnection = new HubConnectionBuilder()
-        .WithUrl(NavigationManager.ToAbsoluteUri("/chathub"))
-        .Build();
-
-        hubConnection.On<string, string>("ReceiveMessage", (user, message) =>
-        {
-            _ = InvokeAsync(() =>
-            {
-                var msg = $"{user}: {message}";
-                messages.Add(msg);
-                StateHasChanged();
-            });
-        });
-
-        await hubConnection.StartAsync();
+        public string UserName { get; set; } = "";
+        public string Content { get; set; } = "";
+        public bool IsOwnMessage { get; set; } = false;
+        public DateTime Timestamp { get; set; } = DateTime.Now;
     }
 
-    Task Send() => hubConnection.SendAsync("SendMessage", userInput, messageInput);
+    private async Task SetUserName()
+    {
+        if (!string.IsNullOrWhiteSpace(userInput))
+        {
+            userName = userInput.Trim();
+            isUserNameSet = true;
+            userInput = ""; // 清空輸入框
+            
+            // 建立 SignalR 連接
+            hubConnection = new HubConnectionBuilder()
+                .WithUrl(NavigationManager.ToAbsoluteUri("/chathub"))
+                .Build();
 
-    private bool isConnected => hubConnection.State == HubConnectionState.Connected;
+            hubConnection.On<string, string>("ReceiveMessage", (user, message) =>
+            {
+                _ = InvokeAsync(() =>
+                {
+                    var chatMessage = new ChatMessage
+                    {
+                        UserName = user,
+                        Content = message,
+                        IsOwnMessage = user == userName
+                    };
+                    messages.Add(chatMessage);
+                    StateHasChanged();
+                });
+            });
 
+            await hubConnection.StartAsync();
+        }
+    }
+
+    private async Task Send()
+    {
+        if (hubConnection is not null && !string.IsNullOrWhiteSpace(messageInput))
+        {
+            await hubConnection.SendAsync("SendMessage", userName, messageInput);
+            messageInput = ""; // 清空訊息輸入框
+        }
+    }
+
+    private async Task ScrollToBottom()
+    {
+        await JSRuntime.InvokeVoidAsync("scrollToBottom", "messagesList");
+    }
+
+    @* private async Task HandleKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+        {
+            await Send();
+        }
+    } *@
+
+    private async Task LeaveChat()
+    {
+        if (hubConnection is not null)
+        {
+            await hubConnection.DisposeAsync();
+        }
+        
+        // 重置狀態
+        isUserNameSet = false;
+        userName = "";
+        messages.Clear();
+        hubConnection = null;
+    }
+
+    private bool isConnected => hubConnection?.State == HubConnectionState.Connected;
+
+    public async ValueTask DisposeAsync()
+    {
+        if (hubConnection is not null)
+        {
+            await hubConnection.DisposeAsync();
+        }
+    }
 }
